@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Study Library | Knowledge Assistant</title>
+  <style>
+    :root { color-scheme: light; font: 16px system-ui, sans-serif; color: #172033; background: #f3f6fb; }
+    body { max-width: 1000px; margin: 2rem auto; padding: 0 1rem 3rem; }
+    h1 { margin-bottom: .2rem; } h2 { margin-top: 0; font-size: 1.15rem; }
+    .muted { color: #596579; } .panel { background: white; border: 1px solid #d5dbe5; border-radius: 10px; padding: 1.2rem; margin: 1rem 0; }
+    .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+    input { flex: 1; min-width: 220px; padding: .8rem; border: 1px solid #aeb8c7; border-radius: 6px; }
+    input[type=file] { min-width: min(100%, 300px); }
+    button { padding: .8rem 1rem; border: 0; border-radius: 6px; background: #2457c5; color: white; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+    .status { padding: .6rem .8rem; border-radius: 6px; background: #fff3d4; color: #664500; }
+    .status.ready { background: #e3f7eb; color: #176434; }
+    .document, .source { background: #f5f7fb; padding: .8rem; border-radius: 6px; margin-top: .6rem; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .message { min-height: 1.4rem; } .error { color: #a21c29; } .success { color: #176434; }
+    #answer { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Study Library</h1>
+    <p class="muted">Add PDFs to your library, then ask questions grounded in those documents.</p>
+    <div id="model-status" class="status" role="status">Checking NVIDIA API key…</div>
+  </header>
+
+  <section class="panel" aria-labelledby="key-heading">
+    <h2 id="key-heading">Connect NVIDIA models</h2>
+    <p class="muted">Enter your NVIDIA API key to enable document indexing and answers. It is held in backend memory for this run and is not saved in this browser.</p>
+    <form id="key-form" class="row">
+      <input id="api-key" type="password" autocomplete="off" placeholder="NVIDIA API key" aria-label="NVIDIA API key" required minlength="8">
+      <button id="key-submit" type="submit">Use API key</button>
+    </form>
+    <p id="key-message" class="message" aria-live="polite"></p>
+  </section>
+
+  <main>
+    <section class="panel" aria-labelledby="library-heading">
+      <h2 id="library-heading">Your documents</h2>
+      <p class="muted">Upload a PDF (maximum 50 MB). It will be indexed into the Study Library after upload.</p>
+      <form id="upload-form" class="row">
+        <input id="pdf-file" type="file" accept=".pdf,application/pdf" aria-label="Choose a PDF document" required>
+        <button id="upload-submit" type="submit">Add PDF</button>
+      </form>
+      <p id="upload-message" class="message" aria-live="polite"></p>
+      <div id="documents" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="question-heading">
+      <h2 id="question-heading">Ask the library</h2>
+      <form id="ask-form" class="row">
+        <input id="query" aria-label="Question" placeholder="Ask a question about your documents" required maxlength="10000">
+        <button id="ask-submit" type="submit">Ask</button>
+      </form>
+      <p id="ask-message" class="message error" role="alert"></p>
+      <section id="result" aria-live="polite"></section>
+    </section>
+  </main>
+
+  <script src="/config.js"></script>
+  <script>
+    const api = window.RAG_API_URL;
+    let apiKeyConfigured = false;
+
+    async function readError(response) {
+      try {
+        const body = await response.json();
+        return typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail || body);
+      } catch {
+        return "Request failed";
+      }
+    }
+
+    async function refreshKeyStatus() {
+      const response = await fetch(`${api}/settings/status`);
+      if (!response.ok) throw new Error(await readError(response));
+      const status = await response.json();
+      apiKeyConfigured = status.nvidia_api_key_configured;
+      const badge = document.getElementById("model-status");
+      badge.textContent = apiKeyConfigured
+        ? "NVIDIA API key is configured for this run."
+        : "NVIDIA API key required — enter it below to use the Study Library.";
+      badge.classList.toggle("ready", apiKeyConfigured);
+      document.getElementById("upload-submit").disabled = !apiKeyConfigured;
+      document.getElementById("ask-submit").disabled = !apiKeyConfigured;
+    }
+
+    async function refreshDocuments() {
+      const container = document.getElementById("documents");
+      const response = await fetch(`${api}/documents`);
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json();
+      container.replaceChildren();
+      if (!data.documents.length) {
+        const empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "No PDFs yet. Add a document to start your library.";
+        container.append(empty);
+        return;
+      }
+      for (const document of data.documents) {
+        const item = document.createElement("div");
+        item.className = "document";
+        const name = document.createElement("strong");
+        name.textContent = document.document_name;
+        const size = document.createElement("span");
+        size.className = "muted";
+        size.textContent = ` — ${(document.size_bytes / (1024 * 1024)).toFixed(2)} MB`;
+        item.append(name, size);
+        container.append(item);
+      }
+    }
+
+    document.getElementById("key-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = document.getElementById("key-submit");
+      const message = document.getElementById("key-message");
+      const input = document.getElementById("api-key");
+      button.disabled = true;
+      message.textContent = "";
+      message.className = "message";
+      try {
+        const response = await fetch(`${api}/settings/nvidia-key`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({api_key: input.value})
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        input.value = "";
+        message.textContent = "NVIDIA API key accepted for this run.";
+        message.classList.add("success");
+        await refreshKeyStatus();
+      } catch (error) {
+        message.textContent = error.message;
+        message.classList.add("error");
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    document.getElementById("upload-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = document.getElementById("upload-submit");
+      const message = document.getElementById("upload-message");
+      const file = document.getElementById("pdf-file").files[0];
+      if (!file) return;
+      button.disabled = true;
+      message.textContent = "Uploading and indexing PDF…";
+      message.className = "message";
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const response = await fetch(`${api}/documents`, {method: "POST", body: formData});
+        if (!response.ok) throw new Error(await readError(response));
+        const data = await response.json();
+        message.textContent = `${data.document_name} added to Study Library (${data.chunks} chunks).`;
+        message.classList.add("success");
+        document.getElementById("pdf-file").value = "";
+        await refreshDocuments();
+      } catch (error) {
+        message.textContent = error.message;
+        message.classList.add("error");
+      } finally {
+        button.disabled = !apiKeyConfigured;
+      }
+    });
+
+    document.getElementById("ask-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = document.getElementById("ask-submit");
+      const error = document.getElementById("ask-message");
+      const result = document.getElementById("result");
+      button.disabled = true;
+      error.textContent = "";
+      result.replaceChildren();
+      try {
+        const response = await fetch(`${api}/ask`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({query: document.getElementById("query").value})
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        const data = await response.json();
+        const answer = document.createElement("article");
+        answer.className = "document";
+        const title = document.createElement("h3");
+        title.textContent = "Answer";
+        const content = document.createElement("p");
+        content.id = "answer";
+        content.textContent = data.answer;
+        const confidence = document.createElement("p");
+        confidence.className = "muted";
+        confidence.textContent = `Confidence: ${data.confidence}`;
+        answer.append(title, content, confidence);
+        const heading = document.createElement("h3");
+        heading.textContent = "Sources";
+        result.append(answer, heading);
+        for (const source of data.sources) {
+          const item = document.createElement("div");
+          item.className = "source";
+          const meta = document.createElement("strong");
+          meta.textContent = `${source.document_name}, page ${source.page_number}`;
+          const text = document.createElement("pre");
+          text.textContent = source.text;
+          item.append(meta, text);
+          result.append(item);
+        }
+      } catch (exception) {
+        error.textContent = exception.message;
+      } finally {
+        button.disabled = !apiKeyConfigured;
+      }
+    });
+
+    Promise.all([refreshKeyStatus(), refreshDocuments()]).catch((error) => {
+      document.getElementById("model-status").textContent = error.message;
+    });
+  </script>
+</body>
+</html>
