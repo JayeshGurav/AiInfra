@@ -1,4 +1,6 @@
-# Enterprise RAG System (local-first)
+# AiInfra
+
+## Enterprise RAG System (local-first)
 
 Modular PDF RAG service using Python 3.11, FastAPI, Qdrant and NVIDIA-hosted models. Services are containerized independently so the same images/configuration can be deployed to EC2. Keep the NVIDIA key in `.env` for local work and in a secret manager in production.
 
